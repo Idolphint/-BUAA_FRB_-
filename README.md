@@ -1,3 +1,2 @@
-# -BUAA_FRB_-
-
-这里是由阳神带领的冯如小队，完毕！
+# FRB_lttprivate
+save code of myself
