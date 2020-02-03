@@ -2,12 +2,12 @@ import torch
 import torch.nn.functional as F
 import torch.nn as nn
 import math
-from modeling.sync_batchnorm.batchnorm import SynchronizedBatchNorm3d
+from modeling.sync_batchnorm.batchnorm import SynchronizedBatchNorm2d
 import torch.utils.model_zoo as model_zoo
 
 def conv_bn(inp, oup, stride, BatchNorm):
     return nn.Sequential(
-        nn.Conv3d(inp, oup, 3, stride, 1, bias=False), #in_ch, out_ch, kernel, stride, pad
+        nn.Conv2d(inp, oup, 3, stride, 1, bias=False), #in_ch, out_ch, kernel, stride, pad
         BatchNorm(oup),
         nn.ReLU6(inplace=True)
     )
@@ -18,7 +18,7 @@ def fixed_padding(inputs, kernel_size, dilation):
     pad_total = kernel_size_effective - 1
     pad_beg = pad_total // 2
     pad_end = pad_total - pad_beg
-    padded_inputs = F.pad(inputs, (pad_beg, pad_end, pad_beg, pad_end, pad_beg, pad_end))
+    padded_inputs = F.pad(inputs, (pad_beg, pad_end, pad_beg, pad_end))
     return padded_inputs
 
 
@@ -36,33 +36,32 @@ class InvertedResidual(nn.Module):
         if expand_ratio == 1:
             self.conv = nn.Sequential(
                 # dw
-                nn.Conv3d(hidden_dim, hidden_dim, 3, stride, 0, dilation, groups=hidden_dim, bias=False),
+                nn.Conv2d(hidden_dim, hidden_dim, 3, stride, 0, dilation, groups=hidden_dim, bias=False),
                 BatchNorm(hidden_dim),
                 nn.ReLU6(inplace=True),
                 # pw-linear
-                nn.Conv3d(hidden_dim, oup, 1, 1, 0, 1, 1, bias=False),
+                nn.Conv2d(hidden_dim, oup, 1, 1, 0, 1, 1, bias=False),
                 BatchNorm(oup),
             )
         else:
             self.conv = nn.Sequential(
                 # pw
-                nn.Conv3d(inp, hidden_dim, 1, 1, (0,0,0), 1, bias=False), #ori pad=0,the same as follow
+                nn.Conv2d(inp, hidden_dim, 1, 1, 0, 1, bias=False),
                 BatchNorm(hidden_dim),
                 nn.ReLU6(inplace=True),
                 # dw
-                nn.Conv3d(hidden_dim, hidden_dim, 3, stride, (0,0,0), dilation, groups=hidden_dim, bias=False),
+                nn.Conv2d(hidden_dim, hidden_dim, 3, stride, 0, dilation, groups=hidden_dim, bias=False),
                 BatchNorm(hidden_dim),
                 nn.ReLU6(inplace=True),
                 # pw-linear
-                nn.Conv3d(hidden_dim, oup, 1, 1, (0,0,0), 1, bias=False),
+                nn.Conv2d(hidden_dim, oup, 1, 1, 0, 1, bias=False),
                 BatchNorm(oup),
             )
 
     def forward(self, x):
-        x_pad = fixed_padding(x, self.kernel_size, dilation=self.dilation) #这里才是pad的关键部分其他都是0
+        x_pad = fixed_padding(x, self.kernel_size, dilation=self.dilation)
         if self.use_res_connect:
-            con = self.conv(x_pad)
-            x = x + con
+            x = x + self.conv(x_pad)
         else:
             x = self.conv(x_pad)
         return x
@@ -77,7 +76,7 @@ class MobileNetV2(nn.Module):
         input_channel = 32 #????P的32, 网络的第一层由conv_bn 的channel决定
         current_stride = 1
         rate = 1
-        interverted_residual_setting = [
+        interverted_residual_setting = [ #网络层配置
             # t, c, n, s
             [1, 16, 1, 1],
             [6, 24, 2, 2],
@@ -90,7 +89,7 @@ class MobileNetV2(nn.Module):
 
         # building first layer
         input_channel = int(input_channel * width_mult)
-        self.features = [conv_bn(1, input_channel, 2, BatchNorm)] #input_channel成为输出层
+        self.features = [conv_bn(50, input_channel, 2, BatchNorm)] #input_channel成为输出层, 输入原本是1
         current_stride *= 2
         # building inverted residual blocks
         for t, c, n, s in interverted_residual_setting:
@@ -113,11 +112,12 @@ class MobileNetV2(nn.Module):
         self._initialize_weights()
         if pretrained:
             self._load_pretrained_model()
-        self.low_level_features = self.features[0:4]
+        self.low_level_features = self.features[0:4] #4层之前的称为low level
         self.high_level_features = self.features[4:]
 
     def forward(self, x):
-        #x = torch.tensor(x, dtype=torch.float32)
+        
+        #x = torch.tensor(x, dtype=torch.float32).cuda()
         x = x.float()
         low_level_feat = self.low_level_features(x)
         x = self.high_level_features(low_level_feat)
@@ -135,20 +135,20 @@ class MobileNetV2(nn.Module):
 
     def _initialize_weights(self):
         for m in self.modules():
-            if isinstance(m, nn.Conv3d):
+            if isinstance(m, nn.Conv2d):
                 # n = m.kernel_size[0] * m.kernel_size[1] * m.out_channels
                 # m.weight.data.normal_(0, math.sqrt(2. / n))
                 torch.nn.init.kaiming_normal_(m.weight)
-            elif isinstance(m, SynchronizedBatchNorm3d):
+            elif isinstance(m, SynchronizedBatchNorm2d):
                 m.weight.data.fill_(1)
                 m.bias.data.zero_()
-            elif isinstance(m, nn.BatchNorm3d):
+            elif isinstance(m, nn.BatchNorm2d):
                 m.weight.data.fill_(1)
                 m.bias.data.zero_()
 
 if __name__ == "__main__":
-    input = torch.rand(1, 100, 1, 512, 512)
-    model = MobileNetV2(output_stride=16, BatchNorm=nn.BatchNorm3d)
+    input = torch.rand(1, 3, 512, 512)
+    model = MobileNetV2(output_stride=16, BatchNorm=nn.BatchNorm2d)
     output, low_level_feat = model(input)
     print(output.size())
     print(low_level_feat.size())
